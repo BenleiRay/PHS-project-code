@@ -1,0 +1,1060 @@
+---
+title: "data cleaning"
+author: "Ray"
+date: "6/7/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+
+Read the data in
+```{r}
+original <- read_csv('sot_performance_ongoing_waits_dec21.csv',
+  col_types = cols(
+    MonthEnding = col_character(),
+    HBT = col_character(),
+    HBTQF = col_character(),
+    PatientType = col_character(),
+    Specialty = col_character(),
+    SpecialtyQF = col_character(),
+    NumberWaiting = col_double(),
+    NumberWaitingQF = col_character(),
+    NumberWaitingOver12Weeks = col_double(),
+    NumberWaitingOver12WeeksQF = col_character()
+  )
+)
+```
+
+
+
+
+Select the Inpatient/Day case observations and order it by date
+```{r}
+original <- original %>%
+  filter(PatientType == 'Inpatient/Day case') %>%
+  arrange(MonthEnding)
+
+```
+
+
+Add Year, Month, DaY 
+```{r}
+a <- original$MonthEnding
+Year <- substr(a,1,4) 
+Month <- substr(a,5,6) 
+Day <- substr(a,7,8)
+original <- cbind(original,Year,Month,Day)
+```
+
+
+Create a new column 'Date' to specify the date
+```{r}
+original <- unite(original, col='Date',remove = FALSE, c('Year', 'Month', 'Day'), sep='-')
+
+original <- original %>%
+  mutate(
+    Date = as.Date(original$Date)
+  )
+```
+
+
+
+
+Read the demography data in
+```{r}
+demography <- read_csv('HBdemography.csv',
+  col_types = cols(
+    HB = col_character(),
+    HBQF = col_character(),
+    Sex = col_character(),
+    SexQF = col_character()
+  )
+)
+
+
+demography.proj <- read_csv('hb_pop_proj_03072020.csv',
+  col_types = cols(
+    HB = col_character(),
+    HBQF = col_character(),
+    Sex = col_character(),
+    SexQF = col_character()
+  )
+)
+
+```
+
+
+Filter the Year to get what we want
+```{r}
+demography <- demography %>%
+  filter(Year >= 2012)
+
+demography.proj <- demography.proj %>%
+  filter(Year == 2021)
+```
+
+Delete the first column
+```{r}
+demography <- demography[,-1]
+```
+
+Combine the the two demography data set since the demography only have the Year from 2012 to 2020, it doesn't have the Year 2021
+```{r}
+demography <- rbind(demography,demography.proj)
+```
+
+
+Delete the observations whose HBT code is SB0801
+```{r}
+original <- original %>%
+  filter(HBT != 'SB0801')
+```
+
+Change the column name
+```{r}
+colnames(demography)[2] <- 'HBT'
+```
+
+
+Change the Year and Month variables to be numeric
+```{r}
+original$Year <- as.numeric(original$Year)
+original$Month <- as.numeric(original$Month)
+```
+
+
+all means all the females and males
+```{r}
+all <- demography %>%
+  filter(Sex == 'All')
+```
+
+
+The human age is classified into four categories as Child (0-12 years), Adolescence (13-18 years), Adult (19-59 years) and Senior Adult (60 years and above). Just get the senior.adult
+```{r}
+Senior.Adult <- all[,67:97]
+```
+
+Calculate the Senior.Adult's population
+```{r}
+
+Senior.Adult.population <- rowSums(Senior.Adult)
+```
+
+calculate the proportion for the Senior.Adult's for every health board in different years
+```{r}
+
+Pro.Senior.Adult <- (Senior.Adult.population/all$AllAges)*100
+```
+
+Select the variables we want
+```{r}
+final.demography <- all[,c(1,2,6)]
+
+final.demography <- cbind(final.demography,Pro.Senior.Adult)
+
+
+```
+
+Merge the two data set by HBT and Year. Then delete the variables we don't want
+```{r}
+merge.df <- left_join(
+  original,
+  final.demography,
+  by = c('HBT','Year')
+)
+
+
+merge.df <- merge.df[,-c(1,3,4,6,8:10,14)]
+
+
+```
+
+
+Order the data set by Date and HBT
+```{r}
+merge.df <- merge.df %>%
+  arrange(Date,HBT)
+
+
+```
+
+Add to time point variable to the data set 
+```{r}
+merge.df <- merge.df %>%
+  mutate(Time.point = (Year-2012)*12 + Month-10)
+```
+
+
+
+Create a new variable called Group to specify the HBT and Specialty. And count the observations in every group
+```{r}
+merge.df <- unite(merge.df, col='Group',remove = FALSE, c('HBT', 'Specialty'), sep='-')
+
+
+
+vaild.group <- merge.df %>%
+count(Group)
+
+
+```
+
+Calculate the NA
+```{r}
+NA.df <- merge.df %>%
+  group_by(Group) %>%
+  select(NumberWaiting) %>% 
+  summarise_all(~sum(is.na(.)))
+
+
+colnames(NA.df)[2] <- 'num.NA'
+```
+
+
+
+Join the data
+```{r}
+NA.merge <- left_join(
+  vaild.group,
+  NA.df,
+  by = c('Group')
+)
+
+```
+
+
+Create a column called vaild.num.n to specify how many available observations per group has
+```{r}
+vaild.num.n <- NA.merge$n-NA.merge$num.NA
+
+NA.merge <- cbind(NA.merge,vaild.num.n)
+```
+
+Delete the groups that don't have any available observations
+```{r}
+group.have.data <- NA.merge %>%
+  filter(vaild.num.n > 0)
+```
+
+Find the groups that need to add some rows of zeros
+```{r}
+group.need.to.add.zeros <- group.have.data %>%
+  filter((vaild.num.n + num.NA) < 111)
+```
+
+Find the groups that don't need to add some rows of zeros
+```{r}
+group.not.need.to.add.zeros <- group.have.data %>%
+  filter((vaild.num.n + num.NA) == 111)
+```
+
+order by the Group variable
+```{r}
+merge.df <- merge.df %>%
+  arrange(Group)
+```
+
+
+filter out the Groups need to add zeros
+```{r}
+merge.df.trim.group.need.to.add.zeros <- merge.df %>%
+  filter(Group %in% group.need.to.add.zeros[,1]) %>%
+  arrange(Group)
+```
+
+filter out the Groups don't need to add zeros
+```{r}
+merge.df.trim.group.not.need.to.add.zeros <- merge.df %>%
+  filter(Group %in% group.not.need.to.add.zeros[,1]) %>%
+  arrange(Group)
+```
+
+Create a vector called Group to contain all the Groups' names which are needed to add zeros
+```{r}
+Group <- group.need.to.add.zeros[,1]
+#rep each group 111 times
+Group <- rep(Group,each = 111)
+
+```
+
+To make up a data frame that is completed
+```{r}
+the.make.up.data.frame <- merge.df.trim.group.not.need.to.add.zeros[1:17649,c(5,6,7,10)]
+
+the.make.up.data.frame <- cbind(the.make.up.data.frame,Group)
+```
+
+
+To separate out the Group to HBT and Specialty
+```{r}
+the.make.up.data.frame <- the.make.up.data.frame %>%
+  separate(Group,
+           into = c('HBT','Specialty'),
+           sep = '-',
+           remove = F
+           )
+  
+```
+
+Create a joint.data which is only containing the Date, Group, NumberWaiting.
+```{r}
+joint.data <- merge.df.trim.group.need.to.add.zeros[,c(5,1,4)]
+```
+
+Set the True NA to 1000 first
+```{r}
+joint.data[is.na(joint.data)] <- 1000
+```
+
+
+
+To joint the data by Group and Date
+```{r}
+the.final.make.up.data.frame <- left_join(
+  the.make.up.data.frame,
+  joint.data,
+  by = c('Group','Date')
+)
+```
+
+
+
+
+Add the zeros on
+```{r}
+the.final.make.up.data.frame[is.na(the.final.make.up.data.frame)] <- 0
+```
+
+Get back NAs
+```{r}
+the.final.make.up.data.frame$NumberWaiting[the.final.make.up.data.frame$NumberWaiting== 1000] <- NA
+```
+
+
+
+
+Join the demography information in
+```{r}
+the.final.make.up.data.frame <- left_join(
+  the.final.make.up.data.frame,
+  final.demography,
+  by = c('HBT','Year')
+)
+```
+
+
+
+
+combine the two data frames
+```{r}
+Final.data <- rbind(merge.df.trim.group.not.need.to.add.zeros,the.final.make.up.data.frame)
+```
+
+
+
+
+Find out the groups that have NAs
+```{r}
+The.groups.have.na <- group.have.data %>%
+  filter(num.NA > 0)
+```
+
+Choose the groups the have NAs
+```{r}
+The.data.have.na <- Final.data  %>%
+  filter(Group %in% The.groups.have.na[,1])
+
+```
+
+Select the NumberWating out to impute
+```{r}
+Y <- The.data.have.na$NumberWaiting
+```
+
+Library the imputeTS package
+```{r}
+library(imputeTS)
+```
+
+Impute the missing values
+```{r}
+Y <- round(na_kalman(Y))
+
+The.data.have.na$NumberWaiting <- Y
+```
+
+
+Find out the groups that don't have NAs
+```{r}
+The.groups.dont.have.na <- group.have.data %>%
+  filter(num.NA == 0)
+```
+
+Choose the groups the don't have NAs
+```{r}
+The.data.dont.have.na <- Final.data  %>%
+  filter(Group %in% The.groups.dont.have.na[,1])
+
+```
+
+
+A data frame without NAS
+```{r}
+Final.data.without.na <- rbind(The.data.dont.have.na,The.data.have.na)
+```
+
+
+preview the data set
+```{r}
+str(Final.data.without.na)
+```
+
+
+
+
+Get the HBT
+```{r}
+myHBT <- unique(Final.data.without.na$HBT)
+
+myHBT <- myHBT[-14]
+```
+
+
+#EDA
+
+
+Choose the first 7 HBT but don't contain the Z9 Specialty since it is the aggregated one
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[1:7]) %>%
+  filter(Specialty != 'Z9') %>%
+  ggplot(aes(Date, NumberWaiting, color = Specialty)) +
+  geom_line() +
+  facet_wrap(~ HBT) +
+  ggtitle("Figure 3.1 Numer of inpatient/Day case patients waiting in first \n7 HBT for every specialty over time")
+
+```
+
+Choose the last 7 HBT but don't contain the Z9 Specialty since it is the aggregated one
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[8:14]) %>%
+  filter(Specialty != 'Z9') %>%
+  ggplot(aes(Date, NumberWaiting, color = Specialty)) +
+  geom_line() +
+  facet_wrap(~ HBT) +
+  ggtitle("Figure 3.2 Numer of inpatient/Day case patients waiting in last \n7 HBT for every specialty over time")
+```
+
+
+
+
+```{r}
+Final.data.without.na %>%
+  filter(Specialty == 'Z9') %>%
+  filter(HBT != 'S92000003') %>%
+  ggplot(aes(Date, NumberWaiting, color = Group)) +
+  geom_line() +
+  ggtitle("Figure 3.3 The aggregated numer of inpatient/Day case patients \nwaiting in the 14 HBT over time")
+```
+
+```{r}
+Final.data.without.na %>% 
+  filter(Group == 'S92000003-Z9')  %>%
+  ggplot(aes(Date, NumberWaiting, color = Group)) +
+  geom_line() +
+  ggtitle("Figure 3.4 The aggregated numer of inpatient/Day case patients \nwaiting in the whole Scotland over time")
+```
+
+
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[1:7]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(AllAges, NumberWaiting, color = Group)) +
+  geom_point() +
+  ggtitle("Figure 3.5 Numer of inpatient/Day case patients waiting in first \n7 HBT V.S population") +
+  xlab("Population")
+```
+
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[8:14]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(AllAges, NumberWaiting, color = Group)) +
+  geom_point() +
+  ggtitle("Figure 3.6 Numer of inpatient/Day case patients waiting in last \n7 HBT V.S population") +
+  xlab("Population")
+```
+
+```{r}
+Final.data.without.na %>% 
+  filter(Group == 'S92000003-Z9')  %>%
+  ggplot(aes(AllAges, NumberWaiting, color = Group)) +
+  geom_point() +
+  ggtitle("Figure 3.7 Numer of inpatient/Day case patients waiting in the \nwhole Scotland  V.S population") +
+  xlab("Population")
+```
+
+
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[1:7]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(Pro.Senior.Adult, NumberWaiting, color = Group)) +
+  geom_point() +
+  ggtitle("Figure 3.8 Numer of inpatient/Day case patients waiting in first \n7 HBT V.S the proportion of old people") +
+  xlab("Proportion of old people (age >= 60)")
+```
+
+
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[8:14]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(Pro.Senior.Adult, NumberWaiting, color = Group)) +
+  geom_point() +
+  ggtitle("Figure 3.9 Numer of inpatient/Day case patients waiting in last \n7 HBT V.S the proportion of old people") +
+  xlab("Proportion of old people (age >= 60)")
+```
+
+
+```{r}
+Final.data.without.na %>% 
+  filter(Group == 'S92000003-Z9')  %>%
+  ggplot(aes(Pro.Senior.Adult, NumberWaiting, color = Group)) +
+  geom_point() +
+  ggtitle("Figure 3.10 Numer of inpatient/Day case patients waiting in the \nwhole Scotland  V.S the proportion of old people") +
+  xlab("Proportion of old people (age >= 60)")
+```
+
+```{r}
+Final.data.without.na %>% 
+  filter(Group == 'S92000003-Z9')  %>%
+  ggplot(aes(x = NumberWaiting)) +
+  geom_histogram(fill = "white", colour = "black") +
+  facet_grid(Group ~ .) +
+  ggtitle("Figure 3.11 Histogram for the whole Scotland (aggregated level)")
+```
+
+```{r}
+Final.data.without.na %>% 
+  filter(HBT %in% myHBT[1:3]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(x = NumberWaiting)) +
+  geom_histogram(fill = "white", colour = "black") +
+  facet_grid(Group ~ ., scales = "free") +
+  ggtitle("Figure 3.12 Histogram for the first three health boards (aggregated level)")
+```
+```{r}
+Final.data.without.na %>% 
+  filter(HBT %in% myHBT[4:6]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(x = NumberWaiting)) +
+  geom_histogram(fill = "white", colour = "black") +
+  facet_grid(Group ~ ., scales = "free") +
+  ggtitle("Figure 3.13 Histogram for the second three health boards (aggregated level)")
+```
+
+
+```{r}
+Final.data.without.na %>% 
+  filter(HBT %in% myHBT[7:9]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(x = NumberWaiting)) +
+  geom_histogram(fill = "white", colour = "black") +
+  facet_grid(Group ~ ., scales = "free") +
+  ggtitle("Figure 3.14 Histogram for the third three health boards (aggregated level)")
+```
+
+```{r}
+Final.data.without.na %>% 
+  filter(HBT %in% myHBT[10:12]) %>%
+  filter(Specialty == 'Z9') %>%
+  ggplot(aes(x = NumberWaiting)) +
+  geom_histogram(fill = "white", colour = "black") +
+  facet_grid(Group ~ ., scales = "free") +
+  ggtitle("Figure 3.15 Histogram for the last three health boards (aggregated level)")
+```
+
+#Modeling
+
+
+
+```{r}
+library("glmmTMB")
+```
+
+
+filter out the Scotland country code and the Z9 aggregated specialty code
+```{r}
+model.data.without.Z9andS92000003 <- Final.data.without.na %>%
+  filter(HBT != 'S92000003') %>%
+  filter(Specialty != 'Z9')
+  
+```
+
+check for overdispersion
+```{r}
+mean(model.data.without.Z9andS92000003$NumberWaiting)
+var(model.data.without.Z9andS92000003$NumberWaiting)
+```
+
+
+
+
+create training data set and test data set
+```{r}
+library(caret)
+set.seed(24)
+train.idx <- c()
+
+
+#to make sure every group have 70% of the data as training data 
+for(i in 1:318) 
+{
+group.train.idx <- createDataPartition(model.data.without.Z9andS92000003[(1+(i-1)*111):(i*111),]$NumberWaiting, p = 0.7)$Resample1
+group.train.idx <- group.train.idx + (i-1)*111
+train.idx <- c(train.idx,group.train.idx)
+}
+
+
+
+train.data <- model.data.without.Z9andS92000003[train.idx,]
+test.data <- model.data.without.Z9andS92000003[-train.idx,]
+```
+
+
+
+a zero-inflated Poisson model with a single zero inflation parameter applying to all observations
+```{r}
+fit_zipoisson <- glmmTMB(NumberWaiting~Time.point + Pro.Senior.Adult + offset(log(AllAges)) +(1|HBT/Specialty),
+data=train.data,
+ziformula=~1,
+family=poisson)
+```
+
+
+
+
+a standard zero-inflated negative binomial model (variance = µ(1 + µ/k)
+```{r}
+fit_zinbinom <- update(fit_zipoisson,family=nbinom2)
+```
+
+
+let variance = ϕµ
+```{r}
+fit_zinbinom1 <- update(fit_zipoisson,family=nbinom1)
+```
+
+
+
+
+without offset
+```{r}
+fit_zinbinom1_bs <- update(fit_zinbinom1,
+. ~ Time.point + AllAges + Pro.Senior.Adult  +(1|HBT/Specialty))
+
+```
+
+
+
+
+Hurdle model
+```{r}
+fit_hnbinom1 <- update(fit_zinbinom1,
+ziformula=~.,
+data=train.data,
+family=truncated_nbinom1)
+```
+
+
+
+get the prediction for every models for the test data 
+```{r}
+y_predicted.fit_zipoisson <- predict(fit_zipoisson, test.data, type = "response")
+y_predicted.fit_zinbinom <- predict(fit_zinbinom, test.data, type = "response")
+y_predicted.fit_zinbinom1 <- predict(fit_zinbinom1, test.data, type = "response")
+y_predicted.fit_zinbinom1_bs <- predict(fit_zinbinom1_bs, test.data, type = "response")
+y_predicted.fit_hnbinom1 <- predict(fit_hnbinom1, test.data, type = "response")
+```
+
+
+
+Model comparison
+```{r}
+data.frame(Model = c("zero-inflated Poisson model","zero-inflated negative binomial model(nbinom2)","zero-inflated negative binomial model(nbinom1)","zero-inflated negative binomial model(nbinom1) without offset","Hurdle negative binomial model(nbinom1)"),
+  RMSE = c(RMSE(y_predicted.fit_zipoisson, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom1, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom1_bs, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1, test.data$NumberWaiting)),
+            MAE = c(MAE(y_predicted.fit_zipoisson, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom1, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom1_bs, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1, test.data$NumberWaiting)),
+  AIC =c(AIC(fit_zipoisson),AIC(fit_zinbinom),AIC(fit_zinbinom1),AIC(fit_zinbinom1_bs),AIC(fit_hnbinom1)))
+```
+
+
+
+
+
+
+
+The summary output
+```{r}
+summary(fit_hnbinom1)
+```
+
+
+
+
+
+without HBT random effect
+```{r}
+fit_hnbinom1.without.HBT.random.effect <- update(fit_hnbinom1,
+                                                 . ~ Time.point + Pro.Senior.Adult + offset(log(AllAges)) +(1|HBT:Specialty),
+ziformula=~.,
+data=train.data,
+family=truncated_nbinom1)
+```
+
+
+
+To test if the HBT random effect important
+```{r}
+anova(fit_hnbinom1.without.HBT.random.effect,fit_hnbinom1)
+```
+
+```{r}
+summary(fit_hnbinom1.without.HBT.random.effect)
+```
+
+
+
+
+
+Without pro.senior.adult
+```{r}
+fit_hnbinom1.without.pro.senior.adult <- update(fit_hnbinom1.without.HBT.random.effect,
+                                                 . ~ Time.point  + offset(log(AllAges)) +(1|HBT:Specialty))
+```
+
+AIC value
+```{r}
+AIC(fit_hnbinom1.without.pro.senior.adult)
+```
+
+test if Pro.Senior.Adult is significant
+```{r}
+anova(fit_hnbinom1.without.HBT.random.effect,fit_hnbinom1.without.pro.senior.adult)
+```
+
+prediction for the new two models
+```{r}
+y_predicted.fit_hnbinom1.without.HBT.random.effect <- predict(fit_hnbinom1.without.HBT.random.effect, test.data, type = "response")
+y_predicted.fit_hnbinom1.without.pro.senior.adult <- predict(fit_hnbinom1.without.pro.senior.adult, test.data, type = "response")
+```
+
+
+model comparison
+```{r}
+data.frame(Model = c("zero-inflated Poisson model","zero-inflated negative binomial model(nbinom2)","zero-inflated negative binomial model(nbinom1)","zero-inflated negative binomial model(nbinom1) without offset","Hurdle negative binomial model(nbinom1)","no HBT random effect", "no HBT random effect and no Pro.Senior.Adult"),
+  RMSE = c(RMSE(y_predicted.fit_zipoisson, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom1, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom1_bs, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1.without.HBT.random.effect, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1.without.pro.senior.adult, test.data$NumberWaiting)),
+            MAE = c(MAE(y_predicted.fit_zipoisson, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom1, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom1_bs, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1.without.HBT.random.effect, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1.without.pro.senior.adult, test.data$NumberWaiting)),
+  AIC =c(AIC(fit_zipoisson),AIC(fit_zinbinom),AIC(fit_zinbinom1),AIC(fit_zinbinom1_bs),AIC(fit_hnbinom1),AIC(fit_hnbinom1.without.HBT.random.effect),AIC(fit_hnbinom1.without.pro.senior.adult)))
+```
+
+
+
+fit a model without poisson
+```{r}
+fit.without.link.family <- glmmTMB(NumberWaiting~Time.point + Pro.Senior.Adult + AllAges +(1|HBT:Specialty),
+data=train.data)
+```
+
+
+prediction for the model without link family
+```{r}
+y_predicted.fit.without.link.family <- predict(fit.without.link.family, test.data, type = "response")
+```
+
+
+model comparison
+```{r}
+data.frame(Model = c("zero-inflated Poisson model","zero-inflated negative binomial model(nbinom2)","zero-inflated negative binomial model(nbinom1)","zero-inflated negative binomial model(nbinom1) without offset","Hurdle negative binomial model(nbinom1)","no HBT random effect", "no Pro.Senior.Adult","model without any link family(lmm model)"),
+  RMSE = c(RMSE(y_predicted.fit_zipoisson, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom1, test.data$NumberWaiting),RMSE(y_predicted.fit_zinbinom1_bs, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1.without.HBT.random.effect, test.data$NumberWaiting),RMSE(y_predicted.fit_hnbinom1.without.pro.senior.adult, test.data$NumberWaiting),RMSE(y_predicted.fit.without.link.family,test.data$NumberWaiting)),
+            MAE = c(MAE(y_predicted.fit_zipoisson, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom1, test.data$NumberWaiting),MAE(y_predicted.fit_zinbinom1_bs, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1.without.HBT.random.effect, test.data$NumberWaiting),MAE(y_predicted.fit_hnbinom1.without.pro.senior.adult, test.data$NumberWaiting),MAE(y_predicted.fit.without.link.family,test.data$NumberWaiting)),
+  AIC =c(AIC(fit_zipoisson),AIC(fit_zinbinom),AIC(fit_zinbinom1),AIC(fit_zinbinom1_bs),AIC(fit_hnbinom1),AIC(fit_hnbinom1.without.HBT.random.effect),AIC(fit_hnbinom1.without.pro.senior.adult),AIC(fit.without.link.family)))
+```
+
+
+
+
+
+
+The diagnostic is ok
+```{r}
+qqnorm(ranef(fit_hnbinom1.without.HBT.random.effect)$cond$"HBT:Specialty"[[1]],main="HBT:Specialty effects")
+```
+
+
+
+Observed values v.s predicited values
+```{r}
+
+plot(test.data$NumberWaiting,main='Observed v.s predicted',xlab='Index', ylab='Response',col='green')
+par(new=TRUE)
+plot(y_predicted.fit_hnbinom1.without.HBT.random.effect,axes= FALSE, xlab='', ylab='',col='red')
+legend("topright",c("Observed values","Predicted values"),cex=1,col=c("green","red"),pch=c(1,1))
+```
+
+
+
+
+
+
+create a data frame for Observed values in test data and predicted values of the best model
+```{r}
+data_mod <- data.frame(Predicted = y_predicted.fit_hnbinom1.without.HBT.random.effect,
+                       Observed = test.data$NumberWaiting
+                       )
+```
+
+
+
+Observed values in test data V.S predicted values by the best model
+```{r}
+ggplot(data_mod,
+       aes(x = Predicted,
+           y = Observed)) +
+  geom_point() +
+  geom_abline(intercept = 0,
+              slope = 1,
+              color = "red",
+              size = 2) + 
+    ggtitle("Observed values in test data V.S predicted values by the best model")
+  
+```
+
+
+
+summary output for the best model
+```{r}
+summary(fit_hnbinom1.without.HBT.random.effect)
+
+```
+
+
+The random effects' absolute intercepts below 0.2 for Conditional model
+```{r}
+a <- ranef(fit_hnbinom1.without.HBT.random.effect, condVar=TRUE)
+a <- a[[1]]
+a <- data.frame(a)
+
+a<- a %>%
+  filter(X.Intercept. < 0.2) %>%
+  filter(X.Intercept. > -0.2)
+
+
+
+dotchart(a$X.Intercept., labels = rownames(a), pch = 21, bg = "green", pt.cex = 1.5,main="The random effects' absolute intercepts below 0.2 \nfor Conditional model ")
+
+
+
+```
+
+The random effects' absolute intercepts below 0.2 for Zero-inflation model
+```{r}
+b <- ranef(fit_hnbinom1.without.HBT.random.effect, condVar=TRUE)
+b <- b[[2]]
+b <- data.frame(b)
+
+b<- b %>%
+  filter(X.Intercept. < 0.2) %>%
+  filter(X.Intercept. > -0.2)
+
+
+
+dotchart(b$X.Intercept., labels = rownames(a), pch = 21, bg = "green", pt.cex = 1.5,main="The random effects' absolute intercepts below 0.2 \nfor Zero-inflation model ")
+```
+
+
+
+#Specific-to-specific model
+
+
+
+Just look at the group S080000032-C8
+```{r}
+Final.data.without.na %>%
+  filter(HBT %in% myHBT[13]) %>%
+  filter(Specialty == c('C8') )%>%
+  ggplot(aes(Date, NumberWaiting, color = Group)) +
+  geom_line() +
+  ggtitle("Numer of inpatient/Day case patients waiting in the group \nS080000032-C8 over time")
+```
+
+select this group's training data and test data
+```{r}
+one.group.data <- Final.data.without.na %>%
+  filter(HBT %in% myHBT[13]) %>%
+  filter(Specialty == c('C8')) 
+
+one.group.train.data <- train.data %>% 
+  filter(HBT %in% myHBT[13]) %>%
+  filter(Specialty == c('C8'))
+
+one.group.test.data <- test.data %>% 
+  filter(HBT %in% myHBT[13]) %>%
+  filter(Specialty == c('C8'))
+
+```
+
+check for dispersion
+```{r}
+mean(one.group.data$NumberWaiting)
+var(one.group.data$NumberWaiting)
+```
+
+
+```{r}
+fit.qpois <- glm(NumberWaiting~Time.point + Pro.Senior.Adult + offset(log(AllAges)), data=one.group.train.data, family=quasipoisson)
+summary(fit.qpois)
+
+library(MASS)
+fit.negbin1 <-glm.nb(NumberWaiting~Time.point + Pro.Senior.Adult + offset(log(AllAges)), data=one.group.train.data)
+summary(fit.negbin1)
+```
+
+
+check for significance of offset
+```{r}
+fit.negbin1.without.offset <-glm.nb(NumberWaiting~Time.point + Pro.Senior.Adult + AllAges, data=one.group.train.data)
+summary(fit.negbin1.without.offset)
+```
+
+check for significance of offset
+```{r}
+fit.qpois.without.offset <- glm(NumberWaiting~Time.point + Pro.Senior.Adult + AllAges, data=one.group.train.data, family=quasipoisson)
+summary(fit.qpois.without.offset)
+```
+check for significance of pro.senior.adult
+```{r}
+fit.qpois.without.offset.pro.senior.adult <- glm(NumberWaiting~Time.point + AllAges, data=one.group.train.data, family=quasipoisson)
+summary(fit.qpois.without.offset.pro.senior.adult)
+```
+check for significance of pro.senior.adult
+```{r}
+fit.negbin1.without.offset.pro.senior.adult <-glm.nb(NumberWaiting~Time.point + AllAges, data=one.group.train.data)
+summary(fit.negbin1.without.offset.pro.senior.adult)
+```
+
+AIC for all the potential models
+```{r}
+AIC(fit.qpois)
+AIC(fit.qpois.without.offset)
+AIC(fit.qpois.without.offset.pro.senior.adult)
+AIC(fit.negbin1)
+AIC(fit.negbin1.without.offset)
+AIC(fit.negbin1.without.offset.pro.senior.adult)
+```
+
+predcited value for test data
+```{r}
+fit.qpois.pred <- predict(fit.qpois, one.group.test.data, type = "response")
+fit.qpois.without.offset.pred <- predict(fit.qpois.without.offset, one.group.test.data, type = "response")
+fit.qpois.without.offset.pro.senior.adult.pred <- predict(fit.qpois.without.offset.pro.senior.adult, one.group.test.data, type = "response")
+fit.negbin1.pred <- predict(fit.negbin1, one.group.test.data, type = "response")
+fit.negbin1.without.offset.pred <- predict(fit.negbin1.without.offset, one.group.test.data, type = "response")
+fit.negbin1.without.offset.pro.senior.adult.pred <- predict(fit.negbin1.without.offset.pro.senior.adult, one.group.test.data, type = "response")
+
+```
+
+RMSES all the potential models
+```{r}
+RMSE(fit.qpois.pred,one.group.test.data$NumberWaiting)
+RMSE(fit.qpois.without.offset.pred,one.group.test.data$NumberWaiting)
+RMSE(fit.qpois.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting)
+RMSE(fit.negbin1.pred,one.group.test.data$NumberWaiting)
+RMSE(fit.negbin1.without.offset.pred,one.group.test.data$NumberWaiting)
+RMSE(fit.negbin1.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting)
+```
+
+MAES all the potential models
+```{r}
+MAE(fit.qpois.pred,one.group.test.data$NumberWaiting)
+MAE(fit.qpois.without.offset.pred,one.group.test.data$NumberWaiting)
+MAE(fit.qpois.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting)
+MAE(fit.negbin1.pred,one.group.test.data$NumberWaiting)
+MAE(fit.negbin1.without.offset.pred,one.group.test.data$NumberWaiting)
+MAE(fit.negbin1.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting)
+```
+
+
+diagnostic for the best two models
+```{r}
+library(statmod)
+par(mfrow=c(1,2))
+qqnorm(qresid(fit.qpois.without.offset.pro.senior.adult)); qqline(qresid(fit.qpois.without.offset.pro.senior.adult))
+qqnorm(qresid(fit.negbin1.without.offset.pro.senior.adult)); qqline(qresid(fit.negbin1.without.offset.pro.senior.adult))
+```
+prediction by the glmm model
+```{r}
+fit_hnbinom1.without.HBT.random.effect.pred <- predict(fit_hnbinom1.without.HBT.random.effect, one.group.test.data, type = "response")
+```
+
+model comparison
+```{r}
+data.frame(Model = c("best glmm model","Quasi-Poisson model","negative binomial model"),
+  RMSE = c(RMSE(fit_hnbinom1.without.HBT.random.effect.pred, one.group.test.data$NumberWaiting),RMSE(fit.qpois.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting),RMSE(fit.negbin1.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting)),
+            MAE = c(MAE(fit_hnbinom1.without.HBT.random.effect.pred, one.group.test.data$NumberWaiting),MAE(fit.qpois.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting),MAE(fit.negbin1.without.offset.pro.senior.adult.pred,one.group.test.data$NumberWaiting)),
+  AIC =c(AIC(fit_hnbinom1.without.HBT.random.effect),AIC(fit.qpois.without.offset.pro.senior.adult),AIC(fit.negbin1.without.offset.pro.senior.adult)))
+```
+
+
+Observed values v.s predicted values
+```{r}
+par(mfrow=c(1,3))
+plot(one.group.test.data$NumberWaiting,main='Observed v.s predicted \nof the best glmm model',xlab='Index', ylab='Response',col='green')
+par(new=TRUE)
+plot(fit_hnbinom1.without.HBT.random.effect.pred,axes= FALSE, xlab='', ylab='',col='red')
+legend("topleft",c("Observed values","Predicted values"),cex=1,col=c("green","red"),pch=c(1,1))
+
+plot(one.group.test.data$NumberWaiting,main='Observed v.s predicted \nof the Quasi-Poisson model',xlab='Index', ylab='Response',col='green')
+par(new=TRUE)
+plot(fit.qpois.without.offset.pro.senior.adult.pred,axes= FALSE, xlab='', ylab='',col='red')
+legend("topleft",c("Observed values","Predicted values"),cex=1,col=c("green","red"),pch=c(1,1))
+
+plot(one.group.test.data$NumberWaiting,main='Observed v.s predicted \nof the negative binomial model',xlab='Index', ylab='Response',col='green')
+par(new=TRUE)
+plot(fit.negbin1.without.offset.pro.senior.adult.pred,axes= FALSE, xlab='', ylab='',col='red')
+legend("topleft",c("Observed values","Predicted values"),cex=1,col=c("green","red"),pch=c(1,1))
+```
+
+
+
+
+
+
+# Need to be contiued, job is not finsihed ...
+
+
+
+nest the data by HBT and Specialty
+```{r}
+by_hbt_specialty <- Final.data.without.na %>% 
+  group_by(HBT, Specialty) %>% 
+  nest()
+
+
+```
+
+
+
+
+
+
+
